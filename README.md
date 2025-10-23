@@ -218,3 +218,26 @@ public class DemoConsumer {
 1) 文件树；  
 2) `git status` 期望为干净工作区的说明；  
 3) 本轮注意点与下一轮计划的简短提示。
+
+## 启动回调（Round 7）
+
+* 回调流程：
+  1. `scanComponents(basePackage)` 找到所有 `@Component` 类；
+  2. 对每个组件类型 `getBean(type)`，触发“构造器优先 + 字段注入”的实例化；
+  3. 遍历单例，反射调用所有标注 `@InvokeOnStart` 且无参的方法（有参方法跳过并打印警告）。
+* 设计考量：先实例化再统一回调，避免回调阶段依赖尚未准备好。
+* 验证命令与期望输出：
+
+  ```bash
+  mvn -q -DskipTests package
+  java -cp target/classes com.example.demo.App   # 若还未创建 App，可临时运行以下片段（不提交）：
+  // new com.example.ioc.Container("com.example").start();
+  ```
+
+  期望控制台至少包含：
+
+  ```
+  Hello, IOC!
+  Container started.
+  ```
+* 常见坑：`@InvokeOnStart` 方法误写成带参、回调抛异常导致中断（本实现仅打印错误）、组件未在 basePackage 下而未被扫描到。
