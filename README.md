@@ -184,3 +184,42 @@ Container.start()
 ---
 
 > Round 9 已完成 README 终稿整理。后续 Round 10 将聚焦于最小化测试/自检脚本与提交核对表，持续保持零二进制提交，可选地说明如何在本地生成 Javadoc（不纳入仓库）。
+
+## 🧾 提交前核对表（Round 10）
+
+在提交前请执行一次自检脚本：
+
+#### Linux/macOS：
+
+```bash
+bash verify.sh
+```
+
+#### Windows：
+
+```bat
+verify.bat
+```
+
+#### 脚本验证内容
+
+1. 检查 Maven 与 Java 版本。
+2. 编译项目（跳过测试）。
+3. 运行 Demo 并检测输出是否包含：
+
+   ```
+   Hello, IOC!
+   Container started.
+   ```
+4. 检查是否有二进制/构建产物被追踪。
+5. 输出 “🎉 项目通过基本验证，可提交” 即代表通过。
+
+#### 若脚本执行失败
+
+* 请先检查源码、清理 `target/`，重新构建。
+* 确保 `GreetingService` 与 `StartupRunner` 位于 `com.example.demo` 包下。
+* 如仍失败，可手动执行：
+
+  ```bash
+  mvn clean && mvn -q -DskipTests package && java -cp target/classes com.example.demo.App
+  ```
