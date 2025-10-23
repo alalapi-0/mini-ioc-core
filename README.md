@@ -111,6 +111,31 @@ public class DemoConsumer {
 
 ```
 
+## 容器骨架（Round 3）
+
+- 新增 `Container` 核心类骨架，声明基础配置字段 `basePackage` 与后续单例缓存字段 `singletons`、`namedBeans`。
+- 定义带校验的构造器、启动方法 `start()`、扫描方法 `scanComponents(String)`、实例管理方法 `getBean(Class<T>)`、`createInstance(Class<T>)`、调试辅助方法 `singletonCount()` 与 `getBasePackage()`，方法体仅含 TODO 与占位返回。
+- 每个方法均以行注释说明未来迭代目标，为 Round 4~7 的具体实现留出接口。
+
+**方法职责速览：**
+
+- `start()`：统筹扫描 → 实例化 → 注入 → 回调（Round 4~7 实现）。
+- `scanComponents(String)`：类路径扫描、过滤 `@Component`（Round 4）。
+- `getBean(Class<T>)`：单例缓存与 Bean 获取（Round 5）。
+- `createInstance(Class<T>)`：构造器优先 + 字段注入（Round 6）。
+- `singletonCount()`：暴露缓存规模，便于调试（Round 5）。
+- `getBasePackage()`：读取配置，便于校验参数（Round 3 起即可使用）。
+
+本轮仅交付骨架、不含业务逻辑，是为了保证每个功能模块可以在独立轮次内验收与回归，避免过早实现导致迭代时大幅改动或回溯问题定位。
+
+**常见坑简表：**
+
+| 场景 | 影响 |
+| --- | --- |
+| 过早填充真实逻辑 | Round 4~7 无法逐步演进，修改成本激增 |
+| 忘记补齐方法注释或签名 | 下轮接手时难以对应需求，增加沟通成本 |
+| 未遵守逐行注释要求 | 直接导致本轮验收不通过 |
+
 ## 生成后的操作与输出格式要求
 - 以文件形式输出，不要把任何构建产物写进仓库。  
 - 文件必须与上述路径与内容一致。  
