@@ -76,6 +76,39 @@ mini-ioc-core/
   * `JAVA_HOME` 未设置或 JDK 版本低于 1.8
   * IDE 自动生成了不必要的文件，请提交前检查 `git status`
 
+
+## 注解设计（Round 2）
+
+本轮实现的三大注解围绕“组件声明、依赖注入、启动回调”三个核心职责展开：
+
+- `@Component`：限定在类型级别使用（`@Target(ElementType.TYPE)`），并通过 `@Retention(RetentionPolicy.RUNTIME)` 保留至运行时，从而让容器在扫描阶段识别受管 Bean；`@Documented` 则保证生成文档时不会遗漏组件的标记信息。
+- `@Inject`：允许用于字段或构造器（`@Target({ElementType.FIELD, ElementType.CONSTRUCTOR})`），配合运行时保留策略让容器能够分析注入点并完成依赖装配，`@Documented` 方便在 API 文档中呈现依赖关系。
+- `@InvokeOnStart`：限定在方法级别（`@Target(ElementType.METHOD)`）以标识启动回调，同样依赖运行时保留策略供容器在完成依赖注入后触发回调逻辑。
+
+```java
+@Component("customName")
+public class DemoService {}
+
+public class DemoConsumer {
+    @Inject
+    public DemoConsumer(DemoService service) {}
+
+    @InvokeOnStart
+    public void init() {}
+}
+```
+
+`@InvokeOnStart` 要求方法无参，但 Java 注解本身无法在编译期验证这一约束，因而容器需要在运行时通过反射检查方法签名并在发现参数时抛出异常或给予警告。
+
+后续容器实现将按“包扫描 → 识别 `@Component` → 解析 `@Inject` 注入点 → 在初始化完成后调用 `@InvokeOnStart`”的顺序执行，确保组件生命周期管理一致可控。
+
+**常见坑提醒：**
+
+- 忘记将注解保留到运行时，导致反射阶段获取不到标记。
+- 导包错误或使用了错误的包路径，造成编译失败或注解不可见。
+- 将注解文件放错目录，破坏既定的包结构和后续扫描逻辑。
+
+
 ```
 
 ## 生成后的操作与输出格式要求
