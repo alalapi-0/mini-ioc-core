@@ -8,261 +8,179 @@
 
 # mini-ioc-core（项目说明）
 
-本仓库用于按作业要求从零实现一个“注解 + 反射”的迷你 IoC 容器。后续将通过 10 轮迭代逐步完善功能，并在 README 中同步解释与验证方式。
+本仓库用于按作业要求从零实现一个“注解 + 反射”的迷你 IoC 容器，并通过 10 轮迭代逐步完善功能及文档。以下内容为 Round 9 的 README 终稿，覆盖项目特性、运行方式、方法职责、作业映射、调试指引与扩展思路。
 
-## 一、快速开始
+## ① 项目简介与特性
 
-- 环境要求：JDK 8，Maven 3.6+  
-- 构建（不运行测试）：  
-  ```bash
-  mvn -q -DskipTests package
+- 迷你 IoC（Inversion of Control，控制反转）容器：通过注解声明组件，容器负责实例创建、依赖注入与生命周期管理。
+- 注解驱动 + 反射：使用自定义 `@Component`、`@Inject`、`@InvokeOnStart` 注解，结合反射扫描与调用，无需 XML 或额外配置文件。
+- 构造器优先 + 字段注入：优先选择带 `@Inject` 的构造器完成依赖装配，若不存在则回退到无参构造器，并在实例化后处理 `@Inject` 字段。
+- 启动回调：在容器启动后统一触发 `@InvokeOnStart` 无参方法，可用于打印欢迎语或执行初始化逻辑。
+- 纯教学实现：不依赖 Spring/Guice 等框架，仅覆盖核心流程，便于理解 IoC/DI（Dependency Injection，依赖注入）的基本原理。
+
+## ② 快速开始
+
+```bash
+# 构建（不运行测试）
+mvn -q -DskipTests package
+
+# 运行 Demo（正式入口）
+java -cp target/classes com.example.demo.App
 ```
 
-> 说明：构建过程中产生的输出将位于 `target/` 目录；该目录已在 `.gitignore` 中忽略，不会提交到仓库。
-
-* 当前状态（Round 1）：已完成项目脚手架、Maven 配置、目录骨架与 `.gitignore`，尚未包含可运行代码。
-
-## 二、目录结构
+预期输出（关键行）：
 
 ```
-mini-ioc-core/
-├─ .gitignore
-├─ pom.xml
-├─ README.md
-└─ src/
-   └─ main/
-      └─ java/
-         └─ com/
-            └─ example/
-               ├─ ioc/
-               │  └─ package-info.java
-               ├─ ioc/
-               │  └─ annotations/
-               │     └─ package-info.java
-               └─ demo/
-                  └─ package-info.java
+Hello, IOC!
+Container started.
 ```
 
-## 三、十轮计划路线图
-
-1. Round 1：仓库初始化、README 顶置作业要求、`.gitignore`
-2. Round 2：定义 `@Component`、`@Inject`、`@InvokeOnStart` 三个注解
-3. Round 3：`Container` 骨架与方法签名
-4. Round 4：包扫描 `scanComponents`（支持 file 与 jar）
-5. Round 5：单例缓存与 `getBean`
-6. Round 6：依赖注入（构造器优先 + 字段注入）
-7. Round 7：启动回调 `@InvokeOnStart`
-8. Round 8：Demo 组件与 `App` 启动类
-9. Round 9：README 终稿与作业清单对照
-10. Round 10：质量加固与提交自检
-
-## 四、二进制与生成物政策
-
-* 本仓库**不提交**任何二进制文件或构建产物，包含但不限于：`.class`、`.jar`、`.war`、`target/` 目录、压缩包与可执行文件。
-* `.gitignore` 已配置忽略上述内容。
-* 如需验证运行效果，请在本地构建与运行，不要将生成物写入仓库。
-
-## 五、验证与常见问题（本轮）
-
-* 验证：在仓库根目录执行
-
-  ```bash
-  mvn -q -DskipTests package
-  ```
-
-  期望：构建成功，仓库中无新增二进制文件被跟踪。
-* 常见问题：
-
-  * `JAVA_HOME` 未设置或 JDK 版本低于 1.8
-  * IDE 自动生成了不必要的文件，请提交前检查 `git status`
-
-
-## 注解设计（Round 2）
-
-本轮实现的三大注解围绕“组件声明、依赖注入、启动回调”三个核心职责展开：
-
-- `@Component`：限定在类型级别使用（`@Target(ElementType.TYPE)`），并通过 `@Retention(RetentionPolicy.RUNTIME)` 保留至运行时，从而让容器在扫描阶段识别受管 Bean；`@Documented` 则保证生成文档时不会遗漏组件的标记信息。
-- `@Inject`：允许用于字段或构造器（`@Target({ElementType.FIELD, ElementType.CONSTRUCTOR})`），配合运行时保留策略让容器能够分析注入点并完成依赖装配，`@Documented` 方便在 API 文档中呈现依赖关系。
-- `@InvokeOnStart`：限定在方法级别（`@Target(ElementType.METHOD)`）以标识启动回调，同样依赖运行时保留策略供容器在完成依赖注入后触发回调逻辑。
-
-```java
-@Component("customName")
-public class DemoService {}
-
-public class DemoConsumer {
-    @Inject
-    public DemoConsumer(DemoService service) {}
-
-    @InvokeOnStart
-    public void init() {}
-}
-```
-
-`@InvokeOnStart` 要求方法无参，但 Java 注解本身无法在编译期验证这一约束，因而容器需要在运行时通过反射检查方法签名并在发现参数时抛出异常或给予警告。
-
-后续容器实现将按“包扫描 → 识别 `@Component` → 解析 `@Inject` 注入点 → 在初始化完成后调用 `@InvokeOnStart`”的顺序执行，确保组件生命周期管理一致可控。
-
-**常见坑提醒：**
-
-- 忘记将注解保留到运行时，导致反射阶段获取不到标记。
-- 导包错误或使用了错误的包路径，造成编译失败或注解不可见。
-- 将注解文件放错目录，破坏既定的包结构和后续扫描逻辑。
-
+## ③ 目录结构
 
 ```
+src/main/java/com/example/
+├─ ioc/
+│  ├─ annotations/
+│  │  ├─ Component.java
+│  │  ├─ Inject.java
+│  │  └─ InvokeOnStart.java
+│  └─ Container.java
+└─ demo/
+   ├─ App.java
+   ├─ components/
+   │  ├─ StartupRunner.java
+   │  ├─ ScanProbe.java
+   │  └─ GammaRunner.java
+   └─ services/
+      ├─ GreetingService.java
+      ├─ AlphaService.java
+      └─ BetaService.java
+```
 
-## 容器骨架（Round 3）
+## ④ 核心流程图（ASCII）
 
-- 新增 `Container` 核心类骨架，声明基础配置字段 `basePackage` 与后续单例缓存字段 `singletons`、`namedBeans`。
-- 定义带校验的构造器、启动方法 `start()`、扫描方法 `scanComponents(String)`、实例管理方法 `getBean(Class<T>)`、`createInstance(Class<T>)`、调试辅助方法 `singletonCount()` 与 `getBasePackage()`，方法体仅含 TODO 与占位返回。
-- 每个方法均以行注释说明未来迭代目标，为 Round 4~7 的具体实现留出接口。
+```
+App.main()
+    │
+    ▼
+Container.start()
+    │
+    ├─ scanComponents(basePackage) ──► Set<ComponentClass>
+    │
+    ├─ for each ComponentClass:
+    │     └─ getBean(type)
+    │          ├─ singletons.get(type)? yes → return
+    │          └─ createInstance(type)
+    │               ├─ find @Inject ctor? yes → resolve args via getBean()
+    │               ├─ else use no-arg ctor
+    │               └─ performFieldInjection(@Inject fields via getBean())
+    │          └─ putSingleton(type, instance) [+ namedBeans if value()]
+    │
+    └─ invokeStartCallbacks()  // call @InvokeOnStart no-arg methods
+```
 
-**方法职责速览：**
+## ⑤ 方法职责表（对照实现轮次）
 
-- `start()`：统筹扫描 → 实例化 → 注入 → 回调（Round 4~7 实现）。
-- `scanComponents(String)`：类路径扫描、过滤 `@Component`（Round 4）。
-- `getBean(Class<T>)`：单例缓存与 Bean 获取（Round 5）。
-- `createInstance(Class<T>)`：构造器优先 + 字段注入（Round 6）。
-- `singletonCount()`：暴露缓存规模，便于调试（Round 5）。
-- `getBasePackage()`：读取配置，便于校验参数（Round 3 起即可使用）。
+| 方法 | 职责 | 轮次 |
+|---|---|---|
+| `scanComponents(String)` | 扫描 `@Component`（file/jar） | Round 4 |
+| `getBean(Class<T>)` | 命中缓存/实例化并缓存 | Round 5 |
+| `createInstance(Class<T>)` | 构造器优先 + 字段注入 + 循环依赖检测 | Round 6 |
+| `start()` | 扫描→实例化→回调 | Round 7 |
+| `invokeStartCallbacks()` | 仅无参 `@InvokeOnStart` | Round 7 |
+| `singletonCount()` | 观察缓存条目 | Round 5 |
 
-本轮仅交付骨架、不含业务逻辑，是为了保证每个功能模块可以在独立轮次内验收与回归，避免过早实现导致迭代时大幅改动或回溯问题定位。
+## ⑥ 与“作业 0~11 节”的逐条映射对照表
 
-**常见坑简表：**
+| 作业章节 | 仓库中的对应实现/文件 | 如何验证 |
+|---|---|---|
+| 0. 准备和先体验 | `com.example.demo.App`、`GreetingService`、`StartupRunner` | `mvn -q -DskipTests package && java -cp target/classes com.example.demo.App` |
+| 1. 三大注解 | `Component.java` / `Inject.java` / `InvokeOnStart.java` | 查看源码或 `jshell --class-path target/classes` 加载并检查 `@Retention(RUNTIME)` |
+| 2. Demo 组件 | `GreetingService`、`StartupRunner`、`ScanProbe` | 运行 Demo 输出 `Hello, IOC!` |
+| 3. 容器骨架 | `Container.java`（字段/方法签名） | 编译通过；`new Container("com.example").getBasePackage()` 返回配置值 |
+| 4. 包扫描 | `scanComponents`、`scanDirectory`、`scanJarEntries` | `jshell --class-path target/classes` 中调用 `new Container("com.example").scanComponents("com.example").size()` |
+| 5. 单例缓存 | `getBean`、`putSingleton`、`singletonCount` | `jshell` 中重复 `getBean(ScanProbe.class)`，比较是否同一实例 |
+| 6. 依赖注入 | `createInstance`（构造器优先 + 字段注入） | `jshell` 调用 `container.getBean(BetaService.class).ping()` 预期 `beta->AlphaService` |
+| 7. 启动回调 | `invokeStartCallbacks` | 运行 Demo，观察启动阶段输出 |
+| 8. 从零实现清单 | README“方法职责表”“流程图” | 按文档操作可复现容器功能 |
+| 9. 常见报错 | README“⑦ 调试与定位（常见报错）” | 对照症状排查配置/注入问题 |
+| 10. 可选练习 | README“⑨ 附录：可选扩展 `@LogExecution`” | 根据思路自行实现扩展注解 |
+| 11. 验收清单 | README“⑧ 验收清单（最终自检表）” | 自检勾选确认 |
 
-| 场景 | 影响 |
-| --- | --- |
-| 过早填充真实逻辑 | Round 4~7 无法逐步演进，修改成本激增 |
-| 忘记补齐方法注释或签名 | 下轮接手时难以对应需求，增加沟通成本 |
-| 未遵守逐行注释要求 | 直接导致本轮验收不通过 |
+> `jshell` 示例（可直接复制执行）：
+>
+> ```bash
+> jshell --class-path target/classes <<'EOF'
+> import com.example.ioc.Container;
+> import com.example.demo.components.ScanProbe;
+> import com.example.demo.services.BetaService;
+> var c = new Container("com.example");
+> c.start();
+> var probeA = c.getBean(ScanProbe.class);
+> var probeB = c.getBean(ScanProbe.class);
+> System.out.println(probeA == probeB);
+> System.out.println(c.getBean(BetaService.class).ping());
+> /exit
+> EOF
+> ```
 
-## 包扫描（Round 4）
+## ⑦ 调试与定位（常见报错）
 
-- 支持 `file:` 与 `jar:` 两种协议：通过 `Thread.currentThread().getContextClassLoader().getResources(path)` 获取所有与包路径匹配的资源，判断 `URL#getProtocol()` 分支到文件系统或 JAR 处理逻辑。
-- 目录扫描：`file:` 场景使用 `URLDecoder.decode(url.getFile(), "UTF-8")` 处理 Windows 或含空格的路径，然后递归遍历目录、拼装 FQCN 并交给统一的 `maybeAddComponentClass` 过滤 `@Component`。
-- JAR 扫描：`jar:` 协议下借助 `JarURLConnection` 和 `JarFile#entries()` 遍历条目，筛选出 `resourcePath` 前缀且以 `.class` 结尾的记录，再将斜杠替换为点得到类名。
-- 类加载策略：使用 `Class.forName(fqcn, false, cl)` 禁止初始化阶段触发静态块或单例注册等副作用，仅在确认 `clazz.isAnnotationPresent(Component.class)` 时加入集合。
-- 临时调试：`Container#start()` 会打印 `[scan] found component: ...`，可直接运行 `new Container("com.example").start();` 验证扫描结果。
-- 常见坑：
-  * 包名 ↔ 资源路径转换需统一使用 `.` ↔ `/`。
-  * Windows 路径若不解码将出现 `%20` 等转义导致 `File` 不存在。
-  * JAR 内部的匿名类、内部类仍会列出 `$` 名称，一般缺少 `@Component` 因此不额外过滤。
-  * JAR 连接可能因权限或文件损坏抛出异常，现阶段以警告打印并继续扫描。
+- `ClassNotFoundException`：类名或路径转换错误，或组件未放在 `basePackage` 下；检查 `scanComponents` 生成的包路径与包声明是否一致。
+- `IllegalAccessException`：未调用 `setAccessible(true)` 即访问私有构造器/字段；确认 `createInstance` 与 `performFieldInjection` 中的可访问性设置。
+- `NoSuchMethodException`：类缺少无参构造器且没有 `@Inject` 构造器；为目标类新增无参构造器或唯一的 `@Inject` 构造器。
+- `IllegalStateException: Circular dependency`：组件形成 A↔B 等循环依赖；通过引入接口、拆分职责或懒加载手段打破环路。
+- 未触发 `@InvokeOnStart`：方法带参或组件未被扫描；确保方法无参、位于 `com.example` 包下且类含 `@Component`。
+- Windows 路径包含空格：`scanDirectory` 读取 `file:` URL 时需 `URLDecoder.decode(..., "UTF-8")`；保持默认实现即可避免 `%20`。
 
-## 单例缓存与 getBean（Round 5）
+## ⑧ 验收清单（最终自检表）
 
-* 设计思路：
-  * 第一次请求类型 → `createInstance` → `putSingleton` 写入缓存
-  * 之后请求相同类型 → 命中 `singletons` 直接返回
-  * `@Component("name")` 的值会在创建时写入 `namedBeans`，为后续按名称获取奠定基础
-* 当前限制：仅支持**无参构造器**；构造器注入与字段注入在 Round 6 实现
-* 验证方法（建议粘贴以下片段到临时 Main，不提交到仓库）：
+- [ ] 能构建与运行：`mvn -q -DskipTests package && java -cp target/classes com.example.demo.App`
+- [ ] 控制台包含 `Hello, IOC!` 与 `Container started.`
+- [ ] 三大注解均为 `RUNTIME` 且用途清晰
+- [ ] 扫描能发现 Demo 组件
+- [ ] 同类多次 `getBean` 返回同一实例
+- [ ] 构造器注入与字段注入均验证通过
+- [ ] `@InvokeOnStart` 无参方法被自动调用
+- [ ] README 逐条映射作业 0~11 节
+- [ ] 未提交任何二进制/构建产物（`.gitignore` 生效）
+
+## ⑨ 附录：可选扩展 `@LogExecution`
+
+- 设计目标：为启动回调提供轻量级计时/日志扩展，可配置日志级别（`level`）、时间单位（`unit`）、自定义提示语（`message`）。
+- 注解示意：
 
   ```java
-  com.example.ioc.Container c = new com.example.ioc.Container("com.example");
-  // 触发扫描（可选）
-  c.start();
-  // 取两次相同类型，验证是同一实例
-  com.example.demo.components.ScanProbe a = c.getBean(com.example.demo.components.ScanProbe.class);
-  com.example.demo.components.ScanProbe b = c.getBean(com.example.demo.components.ScanProbe.class);
-  System.out.println(a == b); // 预期 true
-  System.out.println("singletonCount=" + c.singletonCount()); // 预期 >= 1
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.METHOD)
+  public @interface LogExecution {
+      String level() default "INFO";
+      ChronoUnit unit() default ChronoUnit.MILLIS;
+      String message() default "";
+  }
   ```
-* 常见坑：目标类没有无参构造器、类型未被扫描到（未加 `@Component` 或不在 basePackage 下）、把构建产物加入版本控制等。
 
-## 依赖注入（Round 6）
-
-* 策略说明：
-  * 构造器注入优先：若存在唯一的 `@Inject` 构造器，使用它进行实例化。
-  * 当没有 `@Inject` 构造器时，退回到无参构造器创建实例。
-  * 完成实例创建后，对所有标注 `@Inject` 的字段进行赋值（即便字段是私有的）。
-  * 简单循环依赖检测：如果在实例化链上再次遇到相同类型，会立即抛出 `IllegalStateException`。
-* 验证片段（建议放在临时 Main 中运行，不提交该类）：
+- 挂钩思路：在 `invokeStartCallbacks()` 中包裹回调调用逻辑，若方法同时标注 `@LogExecution`，则记录开始/结束时间并按配置格式化输出。
+- 伪代码：
 
   ```java
-  com.example.ioc.Container c = new com.example.ioc.Container("com.example");
-  // 扫描（可选打印）
-  c.start();
-  // 获取 BetaService（应触发 AlphaService 的构造器注入）
-  com.example.demo.services.BetaService beta = c.getBean(com.example.demo.services.BetaService.class);
-  System.out.println(beta.ping()); // 预期输出：beta->AlphaService
-
-  // 获取 GammaRunner（应触发字段注入 BetaService）
-  com.example.demo.components.GammaRunner gamma = c.getBean(com.example.demo.components.GammaRunner.class);
-  System.out.println(gamma.runOnce()); // 预期输出：beta->AlphaService
+  long t0 = System.nanoTime();
+  method.invoke(bean);
+  long t1 = System.nanoTime();
+  LogExecution meta = method.getAnnotation(LogExecution.class);
+  if (meta != null) {
+      long elapsed = meta.unit().between(Instant.ofEpochSecond(0, t0), Instant.ofEpochSecond(0, t1));
+      System.out.printf("[%s] %s %s (%d %s)%n", meta.level(), bean.getClass().getSimpleName(), method.getName(), elapsed, meta.unit());
+  }
   ```
-* 循环依赖演示（不要提交示例类，只在说明中展示）：
 
-  ```java
-  // 假设 A 通过字段 @Inject 依赖 B，B 通过字段 @Inject 依赖 A，将触发：
-  // IllegalStateException: Circular dependency detected while creating: ...
-  ```
-* 常见坑：多个 `@Inject` 构造器、缺少无参构造器且无注入构造器、忘记对私有字段调用 `setAccessible(true)`、误把 `target/` 等构建产物加入版本控制。
+  > 仅提供思路，当前仓库未引入该注解的实际实现。
 
-## 生成后的操作与输出格式要求
-- 以文件形式输出，不要把任何构建产物写进仓库。
-- 文件必须与上述路径与内容一致。
-- 所有文本文件使用 UTF-8。
-- 完成后列出最终的文件树和每个文件的首行与末行摘要，方便我人工核对。
+## ⑩ 二进制与生成物政策（重申）
 
-## 验收清单（Codex 完成本轮后需回填为“已完成”或问题说明）
-- [ ] `.gitignore` 已创建且内容与模板一致  
-- [ ] `pom.xml` 可用，`mvn -q -DskipTests package` 构建成功  
-- [ ] 三个 `package-info.java` 已创建且含说明注释  
-- [ ] `README.md` 顶部为“作业要求原文”，其后为项目说明、目录、二进制政策等  
-- [ ] 仓库未新增任何二进制文件被 Git 跟踪
+- 本仓库严禁提交任何构建产物，包括 `.class`、`.jar`、`.war`、`target/` 目录等；`.gitignore` 已配置忽略。
+- PR 审核中如发现二进制文件，应在合并前删除并追加 `.gitignore` 规则，确保版本库仅包含源码与文档。
 
 ---
 
-按以上规范生成文件。完成后请给出：  
-1) 文件树；  
-2) `git status` 期望为干净工作区的说明；  
-3) 本轮注意点与下一轮计划的简短提示。
-
-## 启动回调（Round 7）
-
-* 回调流程：
-  1. `scanComponents(basePackage)` 找到所有 `@Component` 类；
-  2. 对每个组件类型 `getBean(type)`，触发“构造器优先 + 字段注入”的实例化；
-  3. 遍历单例，反射调用所有标注 `@InvokeOnStart` 且无参的方法（有参方法跳过并打印警告）。
-* 设计考量：先实例化再统一回调，避免回调阶段依赖尚未准备好。
-* 验证命令与期望输出：
-
-  ```bash
-  mvn -q -DskipTests package
-  java -cp target/classes com.example.demo.App   # 若还未创建 App，可临时运行以下片段（不提交）：
-  // new com.example.ioc.Container("com.example").start();
-  ```
-
-  期望控制台至少包含：
-
-  ```
-  Hello, IOC!
-  Container started.
-  ```
-* 常见坑：`@InvokeOnStart` 方法误写成带参、回调抛异常导致中断（本实现仅打印错误）、组件未在 basePackage 下而未被扫描到。
-
-## 运行演示（Round 8）
-
-* 启动入口：`com.example.demo.App`
-* 构建与运行命令：
-
-  ```bash
-  mvn -q -DskipTests package
-  java -cp target/classes com.example.demo.App
-  ```
-
-* 期望控制台输出（至少包含以下两行，由 `StartupRunner` 调用 `GreetingService` 打印）：
-
-  ```
-  Hello, IOC!
-  Container started.
-  ```
-
-* 若看到额外的 `[info]` / `[init]` / `[start]` 调试行，这是容器的提示信息，可忽略。
-* 常见坑：
-
-  * 运行时类路径未指向 `target/classes`；
-  * `JAVA_HOME` 未配置到 JDK 8+；
-  * 将 `App` 包名或类名写错导致 `java ...` 找不到主类；
-  * 某些类不在 `com.example` 包下从而未被扫描到。
+> Round 9 已完成 README 终稿整理。后续 Round 10 将聚焦于最小化测试/自检脚本与提交核对表，持续保持零二进制提交，可选地说明如何在本地生成 Javadoc（不纳入仓库）。
