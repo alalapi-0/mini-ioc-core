@@ -9,7 +9,6 @@ import java.util.HashMap; // 引入 HashMap，用于 Map 的默认实现
 import java.util.Set; // 引入 Set，用于保存扫描到的组件类型集合
 import java.util.HashSet; // 引入 HashSet，用于 Set 的默认实现
 import java.util.Objects; // 引入 Objects，用于非空检查等通用工具
-import java.util.Collections; // 引入 Collections，用于返回不可变空集合等占位实现
 
 /**
  * 迷你 IoC 容器的核心类骨架（Round 3：仅声明字段、构造器与方法签名，不实现逻辑）。
@@ -55,22 +54,137 @@ public class Container { // 定义容器核心类
      * 2) 实例化并完成依赖注入；
      * 3) 执行 {@link InvokeOnStart} 标注的无参方法。
      */
-    public void start() { // 容器启动入口；本轮保持空实现
+    public void start() { // 容器启动入口；本轮仅做扫描与打印
         // TODO(Round 7): 完成启动回调的执行逻辑
         // TODO(Round 4~6): 调用扫描、实例化与注入流程
-    }
+
+        // === Round 4: 临时调试输出 ===
+        final Set<Class<?>> components = scanComponents(this.basePackage); // 调用扫描逻辑并收集组件
+        for (Class<?> c : components) { // 遍历扫描结果
+            System.out.println("[scan] found component: " + c.getName()); // 打印发现的组件类名
+        } // for 循环结束
+        // === /临时调试输出 ===
+    } // start 方法结束
 
     /**
      * 扫描基础包下所有被 {@link Component} 标注的类型。
      *
      * @param basePackage 基础包名，形如 "com.example"
-     * @return 扫描到的组件类型集合；本轮返回空集合占位
+     * @return 扫描到并经 {@link Component} 过滤的类型集合
      */
-    public Set<Class<?>> scanComponents(String basePackage) { // 扫描方法签名；本轮返回空集合
-        Set<Class<?>> components = new HashSet<>(); // TODO(Round 4): 使用 HashSet 暂存扫描结果
-        // TODO(Round 4): 实现 file/jar 两种来源的类扫描，并过滤 @Component
-        return Collections.unmodifiableSet(components); // 返回不可变空集合占位，后续替换为真实结果
-    }
+    public Set<Class<?>> scanComponents(String basePackage) { // 扫描基础包下的 @Component 类型
+        final Set<Class<?>> components = new HashSet<>(); // 使用 HashSet 去重并保持 O(1) 查找
+
+        final String path = basePackage.replace('.', '/'); // 类路径资源使用斜杠分隔
+
+        try { // 包裹整体扫描逻辑以捕获异常
+            final ClassLoader cl = Thread.currentThread().getContextClassLoader(); // 优先使用上下文类加载器
+            final java.util.Enumeration<java.net.URL> resources = cl.getResources(path); // 列举所有同名资源
+
+            while (resources.hasMoreElements()) { // 逐个资源处理
+                final java.net.URL url = resources.nextElement(); // 取出一个资源 URL
+                final String protocol = url.getProtocol(); // 协议可能是 "file" 或 "jar"
+
+                if ("file".equals(protocol)) { // 文件系统场景
+                    final String filePath = java.net.URLDecoder.decode(url.getFile(), "UTF-8"); // 解码后得到实际文件路径
+                    final java.io.File dir = new java.io.File(filePath); // 将路径包装成 File
+                    scanDirectory(basePackage, dir, components, cl); // 委托目录扫描方法
+                } else if ("jar".equals(protocol)) { // JAR 包场景
+                    scanJarEntries(path, components, cl, url); // 委托 JAR 扫描方法
+                } else { // 其他协议
+                    // 保持容器健壮性：不因未知协议而失败
+                } // 协议分支结束
+            } // 资源遍历结束
+        } catch (Exception e) { // 捕获并汇总所有扫描过程的异常
+            System.out.println("[WARN] scanComponents failed: " + e.getMessage()); // 打印异常摘要
+        } // try-catch 结束
+
+        return components; // 返回收集到的组件类型集合
+    } // scanComponents 方法结束
+
+    /**
+     * 递归扫描目录，查找以 .class 结尾的文件，并尝试按包名推导加载为 Class。
+     *
+     * @param basePackage 基础包名（如 "com.example"）
+     * @param dir         起始目录（与 basePackage 对应的物理路径）
+     * @param out         扫描结果输出集合
+     * @param cl          用于加载类的类加载器
+     */
+    private void scanDirectory(String basePackage,
+                               java.io.File dir,
+                               Set<Class<?>> out,
+                               ClassLoader cl) { // 遍历文件系统目录
+        if (dir == null || !dir.exists()) { // 若目录不存在，直接返回
+            return; // 安全兜底
+        } // 目录存在性检查结束
+        final java.io.File[] files = dir.listFiles(); // 列出目录下的所有文件与子目录
+        if (files == null) { // I/O 异常或无权限时可能返回 null
+            return; // 安全兜底
+        } // 文件列表获取结束
+        for (java.io.File f : files) { // 逐项遍历
+            if (f.isDirectory()) { // 子目录
+                final String subPackage = basePackage + "." + f.getName(); // 拼接子包名
+                scanDirectory(subPackage, f, out, cl); // 深度优先遍历
+            } else if (f.getName().endsWith(".class")) { // 命中字节码文件
+                final String simpleClassName = f.getName().substring(0, f.getName().length() - 6); // 6 为 ".class" 长度
+                final String fqcn = basePackage + "." + simpleClassName; // 生成 FQCN
+                maybeAddComponentClass(fqcn, out, cl); // 委托统一的类加载与判定方法
+            } // 文件类型分支结束
+        } // for 循环结束
+    } // scanDirectory 方法结束
+
+    /**
+     * 扫描 JAR 包条目，筛选匹配 path 的 .class 并尝试加载为 Class。
+     *
+     * @param resourcePath 包路径形式（如 "com/example"）
+     * @param out          扫描结果输出集合
+     * @param cl           用于加载类的类加载器
+     * @param url          指向 JAR 资源的 URL
+     */
+    private void scanJarEntries(String resourcePath,
+                                Set<Class<?>> out,
+                                ClassLoader cl,
+                                java.net.URL url) { // 遍历 JAR 中的条目
+        try { // 捕获 JAR 访问异常
+            final java.net.JarURLConnection conn = (java.net.JarURLConnection) url.openConnection(); // 打开连接
+            final java.util.jar.JarFile jar = conn.getJarFile(); // 取得 JarFile 句柄
+
+            final java.util.Enumeration<java.util.jar.JarEntry> entries = jar.entries(); // 遍历 JAR 内所有条目
+            while (entries.hasMoreElements()) { // 逐条处理
+                final java.util.jar.JarEntry entry = entries.nextElement(); // 取出一个条目
+                final String name = entry.getName(); // 形如 "com/example/Foo.class"
+
+                if (name.startsWith(resourcePath) && name.endsWith(".class") && !entry.isDirectory()) { // 过滤条件
+                    final String fqcn = name
+                            .substring(0, name.length() - 6) // 去掉 ".class"
+                            .replace('/', '.'); // 将路径分隔符替换为包名分隔符
+                    maybeAddComponentClass(fqcn, out, cl); // 统一处理
+                } // 条目过滤结束
+            } // JAR 条目遍历结束
+        } catch (Exception e) { // 捕获连接与遍历过程中的异常
+            System.out.println("[WARN] scanJarEntries failed: " + e.getMessage()); // 输出异常信息
+        } // try-catch 结束
+    } // scanJarEntries 方法结束
+
+    /**
+     * 根据 FQCN 尝试加载类；若带有 @Component 注解，则加入结果集合。
+     *
+     * @param fqcn 完全限定类名（Fully Qualified Class Name）
+     * @param out  扫描结果输出集合
+     * @param cl   用于加载类的类加载器
+     */
+    private void maybeAddComponentClass(String fqcn,
+                                        Set<Class<?>> out,
+                                        ClassLoader cl) { // 统一的类加载与注解判定
+        try { // 捕获类加载异常
+            final Class<?> clazz = Class.forName(fqcn, false, cl); // 使用 doInitialize=false 降低副作用
+            if (clazz.isAnnotationPresent(Component.class)) { // 仅收集带注解的类型
+                out.add(clazz); // 放入输出集合
+            } // 注解判定结束
+        } catch (Throwable ex) { // 捕获所有可能的错误与异常
+            System.out.println("[DEBUG] skip class load: " + fqcn + " -> " + ex.getClass().getSimpleName()); // 调试输出
+        } // try-catch 结束
+    } // maybeAddComponentClass 方法结束
 
     /**
      * 根据类型获取（或创建）Bean 实例。

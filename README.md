@@ -136,10 +136,23 @@ public class DemoConsumer {
 | 忘记补齐方法注释或签名 | 下轮接手时难以对应需求，增加沟通成本 |
 | 未遵守逐行注释要求 | 直接导致本轮验收不通过 |
 
+## 包扫描（Round 4）
+
+- 支持 `file:` 与 `jar:` 两种协议：通过 `Thread.currentThread().getContextClassLoader().getResources(path)` 获取所有与包路径匹配的资源，判断 `URL#getProtocol()` 分支到文件系统或 JAR 处理逻辑。
+- 目录扫描：`file:` 场景使用 `URLDecoder.decode(url.getFile(), "UTF-8")` 处理 Windows 或含空格的路径，然后递归遍历目录、拼装 FQCN 并交给统一的 `maybeAddComponentClass` 过滤 `@Component`。
+- JAR 扫描：`jar:` 协议下借助 `JarURLConnection` 和 `JarFile#entries()` 遍历条目，筛选出 `resourcePath` 前缀且以 `.class` 结尾的记录，再将斜杠替换为点得到类名。
+- 类加载策略：使用 `Class.forName(fqcn, false, cl)` 禁止初始化阶段触发静态块或单例注册等副作用，仅在确认 `clazz.isAnnotationPresent(Component.class)` 时加入集合。
+- 临时调试：`Container#start()` 会打印 `[scan] found component: ...`，可直接运行 `new Container("com.example").start();` 验证扫描结果。
+- 常见坑：
+  * 包名 ↔ 资源路径转换需统一使用 `.` ↔ `/`。
+  * Windows 路径若不解码将出现 `%20` 等转义导致 `File` 不存在。
+  * JAR 内部的匿名类、内部类仍会列出 `$` 名称，一般缺少 `@Component` 因此不额外过滤。
+  * JAR 连接可能因权限或文件损坏抛出异常，现阶段以警告打印并继续扫描。
+
 ## 生成后的操作与输出格式要求
-- 以文件形式输出，不要把任何构建产物写进仓库。  
-- 文件必须与上述路径与内容一致。  
-- 所有文本文件使用 UTF-8。  
+- 以文件形式输出，不要把任何构建产物写进仓库。
+- 文件必须与上述路径与内容一致。
+- 所有文本文件使用 UTF-8。
 - 完成后列出最终的文件树和每个文件的首行与末行摘要，方便我人工核对。
 
 ## 验收清单（Codex 完成本轮后需回填为“已完成”或问题说明）
