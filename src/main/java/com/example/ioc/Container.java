@@ -56,17 +56,63 @@ public class Container { // 定义容器核心类
      * 2) 实例化并完成依赖注入；
      * 3) 执行 {@link InvokeOnStart} 标注的无参方法。
      */
-    public void start() { // 容器启动入口；本轮仅做扫描与打印
-        // TODO(Round 7): 完成启动回调的执行逻辑
-        // TODO(Round 4~6): 调用扫描、实例化与注入流程
+    public void start() { // 容器启动入口：扫描组件 → 实例化单例 → 执行启动回调
+        final Set<Class<?>> components = scanComponents(this.basePackage); // 第一步：扫描基础包，找出所有带 @Component 的类型
+        System.out.println("[info] components discovered: " + components.size()); // 可选调试：打印扫描到的组件总数
 
-        // === Round 4: 临时调试输出 ===
-        final Set<Class<?>> components = scanComponents(this.basePackage); // 调用扫描逻辑并收集组件
-        for (Class<?> c : components) { // 遍历扫描结果
-            System.out.println("[scan] found component: " + c.getName()); // 打印发现的组件类名
-        } // for 循环结束
-        // === /临时调试输出 ===
+        for (Class<?> type : components) { // 第二步：实例化所有组件（这一步会填充 singletons）
+            try { // 尝试通过 getBean 触发创建或获取单例
+                Object bean = getBean(type); // 通过 getBean 触发：命中缓存则返回，否则创建并放入缓存（含依赖注入）
+                System.out.println("[init] singleton ready: " + type.getName()); // 可选调试：打印完成实例化的类名
+            } catch (RuntimeException ex) { // 捕获实例化过程中的运行时异常
+                System.out.println("[ERROR] failed to init component: " + type.getName() + " -> " + ex.getMessage()); // 打印错误但不中断后续流程（简化容错）
+            } // try-catch 结束
+        } // 组件实例化循环结束
+
+        invokeStartCallbacks(); // 第三步：执行所有带 @InvokeOnStart 的无参方法
     } // start 方法结束
+
+    /**
+     * 遍历已创建的单例实例，反射调用所有被 @InvokeOnStart 标注且“无参”的方法。
+     * 对于带参数的方法将跳过并打印警告，避免运行期出错。
+     * 任意一个回调抛出异常时，只打印错误并继续调用其他回调（简单容错策略）。
+     */
+    private void invokeStartCallbacks() { // 启动回调的集中执行逻辑
+        final java.util.Collection<Object> beans = new java.util.ArrayList<>(singletons.values()); // 将当前单例快照出来，避免遍历过程中结构变动（按本项目语义，变动概率很低）
+        for (Object bean : beans) { // 遍历每个单例
+            final Class<?> clazz = bean.getClass(); // 获取运行时类型
+            final java.lang.reflect.Method[] methods = clazz.getDeclaredMethods(); // 列出声明方法
+            for (java.lang.reflect.Method m : methods) { // 遍历方法
+                if (m.isAnnotationPresent(InvokeOnStart.class)) { // 仅处理标注了 @InvokeOnStart 的方法
+                    if (m.getParameterCount() != 0) { // 若方法带参数
+                        System.out.println("[WARN] @InvokeOnStart must be no-arg: "
+                                + clazz.getName() + "#" + m.getName()); // 打印警告并跳过：容器约定只调用无参方法
+                        continue; // 跳过本方法
+                    } // 参数数量检查结束
+                    final boolean old = m.isAccessible(); // 记录旧访问性
+                    if (!old) { // 若为私有方法
+                        m.setAccessible(true); // 打开访问权限
+                    } // 访问权限调整结束
+                    try { // 包裹反射调用，确保异常被捕获
+                        long t0 = System.nanoTime(); // 可选：统计耗时（基础计时）
+                        m.invoke(bean); // 反射调用回调方法
+                        long t1 = System.nanoTime(); // 记录结束时间
+                        System.out.println("[start] invoked: "
+                                + clazz.getName() + "#" + m.getName()
+                                + " (" + (t1 - t0) + " ns)"); // 简要打印调用信息与耗时
+                    } catch (Exception e) { // 捕获调用中的异常
+                        System.out.println("[ERROR] @InvokeOnStart failed on "
+                                + clazz.getName() + "#" + m.getName()
+                                + " -> " + e.getClass().getSimpleName() + ": " + e.getMessage()); // 打印错误但不中断其他回调
+                    } finally { // 无论调用成功与否都执行的收尾逻辑
+                        if (!old) { // 若之前调整过访问权限
+                            m.setAccessible(false); // 恢复访问权限
+                        } // 恢复访问权限结束
+                    } // try-catch-finally 结束
+                } // @InvokeOnStart 判定结束
+            } // 方法遍历结束
+        } // 单例遍历结束
+    } // invokeStartCallbacks 方法结束
 
     /**
      * 扫描基础包下所有被 {@link Component} 标注的类型。
