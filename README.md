@@ -241,3 +241,28 @@ public class DemoConsumer {
   Container started.
   ```
 * 常见坑：`@InvokeOnStart` 方法误写成带参、回调抛异常导致中断（本实现仅打印错误）、组件未在 basePackage 下而未被扫描到。
+
+## 运行演示（Round 8）
+
+* 启动入口：`com.example.demo.App`
+* 构建与运行命令：
+
+  ```bash
+  mvn -q -DskipTests package
+  java -cp target/classes com.example.demo.App
+  ```
+
+* 期望控制台输出（至少包含以下两行，由 `StartupRunner` 调用 `GreetingService` 打印）：
+
+  ```
+  Hello, IOC!
+  Container started.
+  ```
+
+* 若看到额外的 `[info]` / `[init]` / `[start]` 调试行，这是容器的提示信息，可忽略。
+* 常见坑：
+
+  * 运行时类路径未指向 `target/classes`；
+  * `JAVA_HOME` 未配置到 JDK 8+；
+  * 将 `App` 包名或类名写错导致 `java ...` 找不到主类；
+  * 某些类不在 `com.example` 包下从而未被扫描到。
