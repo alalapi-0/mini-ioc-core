@@ -170,6 +170,35 @@ public class DemoConsumer {
   ```
 * 常见坑：目标类没有无参构造器、类型未被扫描到（未加 `@Component` 或不在 basePackage 下）、把构建产物加入版本控制等。
 
+## 依赖注入（Round 6）
+
+* 策略说明：
+  * 构造器注入优先：若存在唯一的 `@Inject` 构造器，使用它进行实例化。
+  * 当没有 `@Inject` 构造器时，退回到无参构造器创建实例。
+  * 完成实例创建后，对所有标注 `@Inject` 的字段进行赋值（即便字段是私有的）。
+  * 简单循环依赖检测：如果在实例化链上再次遇到相同类型，会立即抛出 `IllegalStateException`。
+* 验证片段（建议放在临时 Main 中运行，不提交该类）：
+
+  ```java
+  com.example.ioc.Container c = new com.example.ioc.Container("com.example");
+  // 扫描（可选打印）
+  c.start();
+  // 获取 BetaService（应触发 AlphaService 的构造器注入）
+  com.example.demo.services.BetaService beta = c.getBean(com.example.demo.services.BetaService.class);
+  System.out.println(beta.ping()); // 预期输出：beta->AlphaService
+
+  // 获取 GammaRunner（应触发字段注入 BetaService）
+  com.example.demo.components.GammaRunner gamma = c.getBean(com.example.demo.components.GammaRunner.class);
+  System.out.println(gamma.runOnce()); // 预期输出：beta->AlphaService
+  ```
+* 循环依赖演示（不要提交示例类，只在说明中展示）：
+
+  ```java
+  // 假设 A 通过字段 @Inject 依赖 B，B 通过字段 @Inject 依赖 A，将触发：
+  // IllegalStateException: Circular dependency detected while creating: ...
+  ```
+* 常见坑：多个 `@Inject` 构造器、缺少无参构造器且无注入构造器、忘记对私有字段调用 `setAccessible(true)`、误把 `target/` 等构建产物加入版本控制。
+
 ## 生成后的操作与输出格式要求
 - 以文件形式输出，不要把任何构建产物写进仓库。
 - 文件必须与上述路径与内容一致。

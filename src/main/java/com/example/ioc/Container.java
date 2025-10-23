@@ -30,6 +30,8 @@ public class Container { // 定义容器核心类
 
     private final Map<Class<?>, Object> singletons = new HashMap<>(); // 单例缓存：类型 -> 实例；Round 5 实现
     private final Map<String, Object> namedBeans = new HashMap<>(); // 命名 Bean 缓存：名称 -> 实例；Round 5 可选扩展
+    // 用于检测简单的循环依赖（如 A 依赖 B，B 又依赖 A）
+    private final Set<Class<?>> inCreation = new HashSet<>(); // 记录当前递归创建链上的类型
 
     /**
      * 由调用方提供基础包名的构造器。
@@ -232,20 +234,103 @@ public class Container { // 定义容器核心类
      * @return 新创建的实例；本轮返回 null 作为占位
      */
     @SuppressWarnings("unchecked") // 反射创建后需要强转到目标类型
-    public <T> T createInstance(Class<T> type) { // 实例创建（最小版）：仅支持无参构造器
-        try {
-            final java.lang.reflect.Constructor<T> ctor = type.getDeclaredConstructor(); // 获取无参构造器
-            if (!ctor.isAccessible()) { // 若是非 public 构造器
-                ctor.setAccessible(true); // 打开可访问性
-            }
-            return ctor.newInstance(); // 调用无参构造器创建实例
-        } catch (NoSuchMethodException e) { // 没有无参构造器的情况
-            throw new IllegalStateException("No default constructor for type: " + type.getName()
-                    + ". Round 5 only supports no-arg constructor; DI will be added in Round 6.", e); // 抛出清晰错误
-        } catch (ReflectiveOperationException e) { // 其余反射异常（如非法访问、实例化失败等）
+    public <T> T createInstance(Class<T> type) { // 依赖注入版实例创建：构造器优先 + 字段注入
+        if (inCreation.contains(type)) { // 循环依赖检测：若 type 已在创建链中，说明出现了 A↔B 或更长环路
+            throw new IllegalStateException("Circular dependency detected while creating: " + type.getName()); // 抛出清晰错误
+        } // 循环依赖判定结束
+        inCreation.add(type); // 将当前类型加入“正在创建”集合
+        try { // 捕获整个创建流程中的反射异常
+            final java.lang.reflect.Constructor<T> ctor = findInjectConstructor(type); // 查找注入构造器（允许为 null）
+            final T instance; // 预先声明实例变量
+            if (ctor != null) { // 找到了唯一的 @Inject 构造器
+                final Object[] args = resolveConstructorArgs(ctor); // 解析构造器参数（递归 getBean）
+                if (!ctor.isAccessible()) { // 确保可访问
+                    ctor.setAccessible(true); // 打开访问权限
+                } // 可访问性处理结束
+                instance = ctor.newInstance(args); // 使用注入构造器创建实例
+            } else { // 没有 @Inject 构造器，退回到无参构造器策略
+                final java.lang.reflect.Constructor<T> noArg = type.getDeclaredConstructor(); // 获取无参构造器
+                if (!noArg.isAccessible()) { // 私有构造器也允许
+                    noArg.setAccessible(true); // 打开访问权限
+                } // 可访问性处理结束
+                instance = noArg.newInstance(); // 通过无参构造器创建实例
+            } // 构造器分支结束
+            performFieldInjection(instance); // 字段注入：为所有带 @Inject 的字段赋值（私有字段允许）
+            return instance; // 返回完成注入的实例（注意：放入单例缓存在 getBean 中统一处理）
+        } catch (NoSuchMethodException e) { // 不存在无参构造器且也没有 @Inject 构造器
+            throw new IllegalStateException("No suitable constructor for type: " + type.getName()
+                    + ". Provide an @Inject constructor or a no-arg constructor.", e); // 指引修复方式
+        } catch (ReflectiveOperationException e) { // 反射期间出现的其余异常
             throw new IllegalStateException("Failed to instantiate type: " + type.getName(), e); // 包装为运行时异常
-        }
-    }
+        } finally { // 确保无论成功或失败都移除标记
+            inCreation.remove(type); // 创建结束：务必从“正在创建”集合中移除，避免误判
+        } // finally 结束
+    } // createInstance 方法结束
+
+    /**
+     * 查找标注了 @Inject 的唯一构造器。
+     * 若不存在返回 null；若存在多个，抛出异常提示开发者修正。
+     */
+    private <T> java.lang.reflect.Constructor<T> findInjectConstructor(Class<T> type) { // 选择注入构造器
+        java.lang.reflect.Constructor<?>[] ctors = type.getDeclaredConstructors(); // 获取所有构造器
+        java.lang.reflect.Constructor<T> found = null; // 记录唯一的注入构造器
+        for (java.lang.reflect.Constructor<?> c : ctors) { // 遍历构造器
+            if (c.isAnnotationPresent(Inject.class)) { // 该构造器带有 @Inject
+                if (found != null) { // 已经找到过一个，再遇到第二个则冲突
+                    throw new IllegalStateException("Multiple @Inject constructors in: " + type.getName()); // 报错
+                } // 冲突判定结束
+                @SuppressWarnings("unchecked") // 向下转型到目标类型构造器
+                java.lang.reflect.Constructor<T> cast = (java.lang.reflect.Constructor<T>) c; // 安全转换
+                found = cast; // 记录该构造器
+            } // 注解判定结束
+        } // 构造器遍历结束
+        return found; // 可能为 null（表示无 @Inject 构造器）
+    } // findInjectConstructor 方法结束
+
+    /**
+     * 解析构造器参数：对每个参数类型递归获取 Bean。
+     *
+     * @param ctor 目标构造器（已选定）
+     * @return 参数实例数组，与构造器参数顺序一致
+     */
+    private Object[] resolveConstructorArgs(java.lang.reflect.Constructor<?> ctor) { // 解析构造器参数
+        final Class<?>[] paramTypes = ctor.getParameterTypes(); // 获取参数类型数组
+        final Object[] args = new Object[paramTypes.length]; // 准备承载参数实例的数组
+        for (int i = 0; i < paramTypes.length; i++) { // 顺序解析
+            args[i] = getBean(paramTypes[i]); // 递归获取对应类型的 Bean（可能触发进一步实例化）
+        } // 参数解析循环结束
+        return args; // 返回已解析的参数实例数组
+    } // resolveConstructorArgs 方法结束
+
+    /**
+     * 对实例执行字段注入：为所有带 @Inject 的字段赋值。
+     *
+     * @param instance 已构造的对象实例
+     */
+    private void performFieldInjection(Object instance) { // 字段注入实现
+        final Class<?> clazz = instance.getClass(); // 获取运行时类型
+        final java.lang.reflect.Field[] fields = clazz.getDeclaredFields(); // 获取声明字段列表
+        for (java.lang.reflect.Field f : fields) { // 遍历每个字段
+            if (f.isAnnotationPresent(Inject.class)) { // 仅处理带 @Inject 的字段
+                final Class<?> depType = f.getType(); // 读取字段类型
+                final Object dep = getBean(depType); // 递归获取依赖实例
+                final boolean old = f.isAccessible(); // 记录旧的可访问状态
+                if (!old) { // 若为私有字段
+                    f.setAccessible(true); // 打开访问权限
+                } // 可访问性处理结束
+                try { // 赋值过程可能抛出异常
+                    f.set(instance, dep); // 赋值依赖
+                } catch (IllegalAccessException e) { // 不太可能（已开启可访问）
+                    throw new IllegalStateException("Failed to inject field: " + f.getName()
+                            + " of " + clazz.getName(), e); // 抛出清晰错误
+                } finally { // 可选：恢复原访问性
+                    if (!old) { // 如果之前是不可访问
+                        f.setAccessible(false); // 恢复
+                    } // 恢复访问性结束
+                } // try-finally 结束
+            } // 注解判定结束
+        } // 字段遍历结束
+    } // performFieldInjection 方法结束
 
     /**
      * 将实例写入单例缓存，并在存在 @Component("name") 时写入命名 Bean 缓存。
