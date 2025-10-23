@@ -149,6 +149,27 @@ public class DemoConsumer {
   * JAR 内部的匿名类、内部类仍会列出 `$` 名称，一般缺少 `@Component` 因此不额外过滤。
   * JAR 连接可能因权限或文件损坏抛出异常，现阶段以警告打印并继续扫描。
 
+## 单例缓存与 getBean（Round 5）
+
+* 设计思路：
+  * 第一次请求类型 → `createInstance` → `putSingleton` 写入缓存
+  * 之后请求相同类型 → 命中 `singletons` 直接返回
+  * `@Component("name")` 的值会在创建时写入 `namedBeans`，为后续按名称获取奠定基础
+* 当前限制：仅支持**无参构造器**；构造器注入与字段注入在 Round 6 实现
+* 验证方法（建议粘贴以下片段到临时 Main，不提交到仓库）：
+
+  ```java
+  com.example.ioc.Container c = new com.example.ioc.Container("com.example");
+  // 触发扫描（可选）
+  c.start();
+  // 取两次相同类型，验证是同一实例
+  com.example.demo.components.ScanProbe a = c.getBean(com.example.demo.components.ScanProbe.class);
+  com.example.demo.components.ScanProbe b = c.getBean(com.example.demo.components.ScanProbe.class);
+  System.out.println(a == b); // 预期 true
+  System.out.println("singletonCount=" + c.singletonCount()); // 预期 >= 1
+  ```
+* 常见坑：目标类没有无参构造器、类型未被扫描到（未加 `@Component` 或不在 basePackage 下）、把构建产物加入版本控制等。
+
 ## 生成后的操作与输出格式要求
 - 以文件形式输出，不要把任何构建产物写进仓库。
 - 文件必须与上述路径与内容一致。

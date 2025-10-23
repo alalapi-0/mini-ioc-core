@@ -198,10 +198,25 @@ public class Container { // 定义容器核心类
      * @param <T>  类型参数，表示返回的具体泛型类型
      * @return 对应类型的单例实例；本轮返回 null 作为占位
      */
-    @SuppressWarnings("unchecked") // 未来实现中会涉及类型转换，这里预先抑制泛型警告
-    public <T> T getBean(Class<T> type) { // Bean 获取方法；本轮不实现
-        // TODO(Round 5): 实现单例缓存与按类型的实例获取
-        return null; // 占位返回，保持编译通过
+    @SuppressWarnings("unchecked") // 抑制泛型转换告警：Map 按类型保存，读取时需要强转
+    public <T> T getBean(Class<T> type) { // 基于类型的 Bean 获取入口
+        if (type == null) { // 防御式编程，避免 NPE
+            throw new IllegalArgumentException("type must not be null"); // 抛出非法参数异常
+        }
+
+        final Object cached = singletons.get(type); // 从单例 Map 中按类型查找
+        if (cached != null) { // 如果已存在实例
+            return (T) cached; // 直接强转返回
+        }
+
+        final T instance = createInstance(type); // 委托实例化方法（Round 6 再扩展 DI）
+        if (instance == null) { // 安全兜底：应当不会为 null
+            throw new IllegalStateException("createInstance returned null for type: " + type.getName()); // 失败即报错
+        }
+
+        putSingleton(type, instance); // 统一入口，负责写 singletons 与 namedBeans
+
+        return instance; // 返回单例
     }
 
     /**
@@ -216,10 +231,39 @@ public class Container { // 定义容器核心类
      * @param <T>  返回泛型
      * @return 新创建的实例；本轮返回 null 作为占位
      */
-    @SuppressWarnings("unchecked") // 未来实现中会进行反射创建并强转，此处预抑制
-    public <T> T createInstance(Class<T> type) { // 实例创建方法；本轮不实现
-        // TODO(Round 6): 实现构造器优先 + 字段注入的实例化流程
-        return null; // 占位返回，保持编译通过
+    @SuppressWarnings("unchecked") // 反射创建后需要强转到目标类型
+    public <T> T createInstance(Class<T> type) { // 实例创建（最小版）：仅支持无参构造器
+        try {
+            final java.lang.reflect.Constructor<T> ctor = type.getDeclaredConstructor(); // 获取无参构造器
+            if (!ctor.isAccessible()) { // 若是非 public 构造器
+                ctor.setAccessible(true); // 打开可访问性
+            }
+            return ctor.newInstance(); // 调用无参构造器创建实例
+        } catch (NoSuchMethodException e) { // 没有无参构造器的情况
+            throw new IllegalStateException("No default constructor for type: " + type.getName()
+                    + ". Round 5 only supports no-arg constructor; DI will be added in Round 6.", e); // 抛出清晰错误
+        } catch (ReflectiveOperationException e) { // 其余反射异常（如非法访问、实例化失败等）
+            throw new IllegalStateException("Failed to instantiate type: " + type.getName(), e); // 包装为运行时异常
+        }
+    }
+
+    /**
+     * 将实例写入单例缓存，并在存在 @Component("name") 时写入命名 Bean 缓存。
+     *
+     * @param type     Bean 的类型键（Class）
+     * @param instance Bean 实例
+     * @param <T>      实例的泛型类型
+     */
+    private <T> void putSingleton(Class<T> type, T instance) { // 统一写入 singletons 与 namedBeans
+        singletons.put(type, instance); // 将类型 -> 实例 写入单例 Map
+
+        final Component comp = type.getAnnotation(Component.class); // 获取 @Component 注解（若有）
+        if (comp != null) { // 只有在类型被标注了 @Component 时才考虑命名
+            final String name = comp.value(); // 读取 value() 作为 Bean 名称
+            if (name != null && !name.trim().isEmpty()) { // 非空名称才写入
+                namedBeans.put(name.trim(), instance); // 将 名称 -> 实例 放入命名 Bean Map
+            }
+        }
     }
 
     // === 可选：对外只读视图（便于调试/验证），本轮提供签名占位 ===
@@ -229,9 +273,8 @@ public class Container { // 定义容器核心类
      *
      * @return 单例缓存的条目数；本轮返回 0
      */
-    public int singletonCount() { // 单例数量查询；便于后续验收
-        // TODO(Round 5): 返回 singletons.size()
-        return 0; // 占位返回
+    public int singletonCount() { // 返回当前单例缓存的条目数
+        return singletons.size(); // 直接读取 Map 大小
     }
 
     /**
