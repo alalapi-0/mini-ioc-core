@@ -1,5 +1,7 @@
 /**
- * Core IoC container package.
- * Round 1 only creates package skeleton. Real implementation starts in later rounds.
+ * 迷你 IoC 容器的核心实现包。
+ * <p>
+ * 当前主要包含 `Container` 类，负责扫描组件、创建单例、执行依赖注入
+ * 并在启动阶段触发回调方法。
  */
-package com.example.ioc;
+package com.example.ioc; // 声明容器核心包，集中放置基础能力
