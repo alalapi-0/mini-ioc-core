@@ -1,5 +1,6 @@
 /**
- * Demo package for showcasing the container usage.
- * Round 1 keeps it empty; demo classes will be added in later rounds.
+ * Demo（演示）代码所在的包，用于展示如何使用迷你 IoC 容器。
+ * <p>
+ * 包含应用入口、示例组件、示例服务等，便于零基础读者跟随文档逐步验证。
  */
-package com.example.demo;
+package com.example.demo; // 声明演示代码包
