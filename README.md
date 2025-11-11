@@ -79,10 +79,19 @@ System.out.println(runner.runOnce()); // 输出 beta->AlphaService
 - 在实验时可新建自己的包结构，避免直接修改参考实现。
 
 ## 提交前自检
+
+macOS/Linux：
+
 ```bash
-bash verify.sh      # macOS/Linux
-# 或者
-verify.bat          # Windows
+bash verify.sh
 ```
+
+Windows（PowerShell）：
+
+```powershell
+.\verify.bat
+```
+
+如使用 Git Bash，则与 macOS/Linux 相同运行 `bash verify.sh`。
 
 脚本会检测 Java/Maven 版本、执行构建与 Demo，并确认仓库未包含构建产物。
