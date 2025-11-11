@@ -1,11 +1,261 @@
-# 迷你 IOC 容器超详细实现手册（适合零基础）——作业要求原文
+# 迷你 IOC 容器超详细实现手册（适合零基础）
 
-> 以下为课程给定的作业说明，保留其原貌，置于 README 最前，便于验收核对。
+本手册手把手带你从零到一实现“注解 + 反射”的迷你 IOC 容器。每一步都给出：文件路径、要写的代码、验证方式、常见坑。你可以“照做 + 复制粘贴 + 运行”快速达成目标。
 
-【在此完整粘贴老师提供的“作业要求”全文，从第 0 节到第 11 节，逐字保留】
+注意：仓库已提供一份参考实现（com.example.ioc + com.example.demo）。建议你在student包中新建自己的类名进行练习，不必删除参考实现。
 
 ---
 
+## 0. 准备和先体验
+
+* 运行现有 demo：
+
+  * 构建：`mvn -DskipTests package`
+  * 运行：`java -cp target/classes com.example.demo.App`
+* 预期输出：
+
+  * `Hello, IOC!` 和 `Container started.`
+* 如果失败：确认 JDK>=8，目录在 com.example 包下。
+
+---
+
+## 1. 定义三大注解（Component/Inject/InvokeOnStart）
+
+路径：`src/main/java/com/example/ioc/annotations`
+
+1. Component（标记一个类为容器组件）
+
+* 文件：Component.java（已存在，可对照理解）
+* 关键点：
+
+  * `@Target(ElementType.TYPE)` 只用于“类/接口/枚举”
+  * `@Retention(RetentionPolicy.RUNTIME)` 运行时可读（反射需要）
+  * 可选 `value()` 作为 Bean 名称
+
+2. Inject（标记注入点）
+
+* 文件：Inject.java（已存在）
+* 关键点：
+
+  * `@Target({ElementType.FIELD, ElementType.CONSTRUCTOR})` 支持“字段注入”和“构造器注入”
+
+3. InvokeOnStart（启动后自动执行）
+
+* 文件：InvokeOnStart.java（已存在）
+* 关键点：
+
+  * `@Target(ElementType.METHOD)` 用在方法上；本容器仅调用“无参”方法
+
+验证：在 IDE 看注解 Javadoc，理解为什么要用 RUNTIME。
+
+---
+
+## 2. 写两个简单的 Demo 组件
+
+路径：`src/main/java/com/example/demo`
+
+1. 服务类 GreetingService
+
+* 文件：`services/GreetingService.java`（已提供）
+* 作用：返回一条问候语
+
+2. 启动执行类 StartupRunner
+
+* 文件：`components/StartupRunner.java`（已提供）
+* 作用：
+
+  * 字段注入 GreetingService（`@Inject private GreetingService ...`）
+  * 标注 `@InvokeOnStart` 的无参方法，启动时自动调用
+
+验证：第 0 步运行时能看到 Hello, IOC!
+
+---
+
+## 3. 容器骨架（Container）总览
+
+路径：`src/main/java/com/example/ioc/Container.java`
+
+容器要做四件事：
+
+1. 扫描 basePackage 下所有 `@Component` 类（scanComponents）
+2. 单例缓存（singletons）：`Map<Class<?>, Object>`
+3. 依赖注入（createInstance）：
+
+   * 构造器注入：优先选带 `@Inject` 的构造器
+   * 字段注入：为带 `@Inject` 的字段赋值
+4. 启动回调（start）：调用所有带 `@InvokeOnStart` 的“无参方法”
+
+提示：当前仓库已经提供完整的 Container 实现。下面是“逐步拆解讲解”，帮助你理解每段代码，以便自己动手改或新增功能。
+
+---
+
+## 4. 实现包扫描（scanComponents）步骤讲解
+
+位置：`Container#scanComponents`
+
+* 输入：`basePackage`（如 `com.example`）
+* 算法：
+
+  1. 把 `com.example` 替换成路径 `com/example`
+  2. 用 `ClassLoader.getResources(path)` 枚举资源（可能来自文件系统或 JAR）
+  3. 如果是 file 协议：递归目录，遇到以 `.class` 结尾的文件 → 组装类名 → `Class.forName`
+  4. 如果是 jar 协议：枚举 jar 条目，筛选 `path` 开头且 `.class` 结尾 → 组装类名 → `Class.forName`
+  5. 对每个类判断 `clazz.isAnnotationPresent(Component.class)`，是则加入结果集
+
+常见坑：
+
+* Windows 路径带中文/空格，先 `URLDecoder.decode(url.getFile(), "UTF-8")`
+* 类名从文件名转类名要去掉 `.class` 后缀
+
+你可以在 `start()` 里打印扫描结果，帮助理解：
+
+```java
+Set<Class<?>> components = scanComponents(basePackage);
+components.forEach(c -> System.out.println("found component: " + c.getName()));
+```
+
+---
+
+## 5. 单例缓存与 getBean 实现思路
+
+位置：`Container#getBean`
+
+* 逻辑：
+
+  1. 先看 `singletons` 里有没有；有就直接返回
+  2. 没有则 `createInstance(type)` 创建对象，放缓存并返回
+* 命名 Bean（可选）：类上 `@Component("name")` 时，存入 `namedBeans`，后续可拓展按名称获取
+
+自检：同一类多次 `getBean`，打印 `System.identityHashCode()` 应相同。
+
+---
+
+## 6. 依赖注入：构造器优先 + 字段注入
+
+位置：`Container#createInstance`
+
+1. 构造器注入（优先）
+
+* 选择构造器：遍历 `getDeclaredConstructors()`，找到带 `@Inject` 的构造器
+* 解析参数：对每个参数类型递归 `getBean`
+* 访问权限：`setAccessible(true)` 之后 `newInstance(args)`
+
+2. 字段注入（兜底）
+
+* 遍历 `getDeclaredFields()`，对带 `@Inject` 的字段：
+
+  * 递归 `getBean(f.getType())`
+  * `f.setAccessible(true); f.set(obj, dep);`
+
+常见坑：
+
+* 私有构造器/字段要 `setAccessible(true)`
+* 循环依赖（A 依赖 B，B 又依赖 A）本实现未处理，先避免写这样的代码
+
+---
+
+## 7. 启动回调：自动执行无参方法
+
+位置：`Container#start`
+
+* 创建完所有组件后，遍历 `singletons.values()`：
+
+  * 对每个方法 `m`：如果 `@InvokeOnStart` 且 `m.getParameterCount()==0`，反射调用
+* 可访问性：`setAccessible(true)` 调用后在 `finally` 里恢复
+
+调试技巧：在 `run()` 里打印方法名，确认被调用。
+
+---
+
+## 8. 从零实现清单（照着做一遍）
+
+如果你要“自己实现一遍”而不是看参考实现，按这个清单来：
+
+1. 在 `com.example.ioc.annotations` 里创建 3 个注解（和参考一致）
+2. 在 `com.example.ioc` 里创建 `Container` 空类，写好构造器和 `start()` 空壳
+3. 先实现 `scanComponents`，在 `start()` 打印扫描到的组件名
+4. 实现 `getBean` + `createInstance` 的“无参构造器版本”（先不管注入）
+5. 给 `StartupRunner` 添加 `@InvokeOnStart` 方法，确认 `start()` 能调用
+6. 在 `createInstance` 加上“构造器注入”，再加“字段注入”
+7. 复盘：打印出“实例化顺序”和“注入链”，确认流程清晰
+
+---
+
+## 9. 常见报错与定位方法
+
+* `ClassNotFoundException`：类名拼接错误/路径错误/类不在扫描包下
+* `IllegalAccessException`：忘记 `setAccessible(true)` 或访问私有成员
+* `NoSuchMethodException`：无参构造器不存在，或构造器/方法名拼写错误
+* `IllegalArgumentException`（注入失败）：注入类型不匹配/字段类型无 @Component 实现
+* “没有调用到 @InvokeOnStart”：方法有参数/注解写错包名/没被扫描到
+
+建议：把每一步的输出打印到控制台，逐段确认。
+
+---
+
+## 10. 可选练习：为启动回调增加日志（基础版）
+
+在“6. 启动回调”的基础上，为 `@InvokeOnStart` 方法添加一个可选的耗时日志注解 `@LogExecution`：
+
+* 定义注解：`LogExecution(level, unit(NANOS|MILLIS), message)`；`@Target(METHOD)` + `@Retention(RUNTIME)`
+* 在 `start()` 的调用点，若方法带 `@LogExecution`：记录 `System.nanoTime()` 前后差值并按单位打印日志
+* 写一个 `LogDemoRunner` 做循环计算，验证日志输出
+
+---
+
+## 11. 验收清单（你完成了吗？）
+
+* 注解：会解释 3 个注解的用途与元注解设置
+* 扫描：能列出扫描到的组件类名
+* 单例：同一类多次获取对象地址一致
+* 注入：构造器与字段注入至少一种跑通（最好两种）
+* 回调：`@InvokeOnStart` 无参方法自动执行
+* （可选）日志：带 `@LogExecution` 的回调打印耗时
+
+---
+
+---
+
+
+## 作业清单答复
+
+### 0. 准备和先体验
+- `App.main` 会创建容器、启动生命周期，并依次触发问候输出与“Container started.” 信息，运行结果与作业预期一致。
+
+### 1. 定义三大注解（Component/Inject/InvokeOnStart）
+- `@Component`、`@Inject` 与 `@InvokeOnStart` 均放在 `com.example.ioc.annotations` 包下，分别限定了作用目标、运行时保留策略和可选的 Bean 命名/注入位置，与手册描述保持一致。
+
+### 2. 写两个简单的 Demo 组件
+- `GreetingService` 提供问候语方法，`StartupRunner` 通过字段注入该服务并在启动阶段打印内容，正好对应文档中的两个示例组件。
+
+### 3. 容器骨架（Container）总览
+- `Container` 负责扫描组件、维护单例、实例化依赖并触发启动回调，源码中以成员字段和私有方法清晰划分了职责。
+
+### 4. 实现包扫描（scanComponents）步骤讲解
+- `scanComponents` 根据基础包枚举目录与 JAR 条目，调用 `maybeAddComponentClass` 过滤 `@Component` 类型，完整覆盖了手册中的扫描流程与常见细节。
+
+### 5. 单例缓存与 getBean 实现思路
+- `getBean` 先从 `singletons` 中命中返回，否则委托 `createInstance` 并写回缓存，确保容器以单例形式管理组件实例。
+
+### 6. 依赖注入：构造器优先 + 字段注入
+- `createInstance` 支持 `@Inject` 构造器优先解析参数，同时在实例创建后遍历带注解的字段进行赋值，满足两种注入策略。
+
+### 7. 启动回调：自动执行无参方法
+- `invokeStartCallbacks` 遍历所有单例，定位 `@InvokeOnStart` 且无参的方法并通过反射调用，保证回调按要求执行。
+
+### 8. 从零实现清单（照着做一遍）
+- README 后续的“运行流程详解”章节逐项映射手册步骤，方便读者按 7 个子任务动手复现容器。
+
+### 9. 常见报错与定位方法
+- README 已在“常见报错与定位方法”小节列出与手册一致的错误类型与排查提示，可直接对照检查。
+
+### 10. 可选练习：为启动回调增加日志（基础版）
+- 当前容器尚未扩展 `@LogExecution`，`invokeStartCallbacks` 保持简单反射调用，后续可在此处按手册建议增加耗时统计。
+
+### 11. 验收清单（你完成了吗？）
+- 仓库代码已经实现前五项必做能力，示例运行即可验证注解扫描、单例管理、构造器/字段注入和启动回调；可选的日志增强留待进一步练习。
+
+---
 # mini-ioc-core（项目说明）
 
 ## 🧭 项目总览
