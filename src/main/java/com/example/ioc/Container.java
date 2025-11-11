@@ -121,12 +121,24 @@ public class Container { // 定义容器核心类
      * @return 扫描到并经 {@link Component} 过滤的类型集合
      */
     public Set<Class<?>> scanComponents(String basePackage) { // 扫描基础包下的 @Component 类型
+        Objects.requireNonNull(basePackage, "basePackage must not be null"); // 允许外部直接调用时做保护
+        final String trimmedBasePackage = basePackage.trim(); // 去掉首尾空白，避免构造路径时出现多余分隔符
+        if (trimmedBasePackage.isEmpty()) { // 空字符串没有扫描意义
+            throw new IllegalArgumentException("basePackage must not be blank");
+        }
+
         final Set<Class<?>> components = new HashSet<>(); // 使用 HashSet 去重并保持 O(1) 查找
 
-        final String path = basePackage.replace('.', '/'); // 类路径资源使用斜杠分隔
+        final String path = trimmedBasePackage.replace('.', '/'); // 类路径资源使用斜杠分隔
 
         try { // 包裹整体扫描逻辑以捕获异常
-            final ClassLoader cl = Thread.currentThread().getContextClassLoader(); // 优先使用上下文类加载器
+            ClassLoader cl = Thread.currentThread().getContextClassLoader(); // 优先使用上下文类加载器
+            if (cl == null) { // 某些运行时（例如早期的单元测试）可能返回 null
+                cl = Container.class.getClassLoader(); // 回落到容器类自身的类加载器
+            }
+            if (cl == null) { // 仍然为 null 时无法继续扫描
+                throw new IllegalStateException("No ClassLoader available for component scanning");
+            }
             final java.util.Enumeration<java.net.URL> resources = cl.getResources(path); // 列举所有同名资源
 
             while (resources.hasMoreElements()) { // 逐个资源处理
@@ -136,7 +148,7 @@ public class Container { // 定义容器核心类
                 if ("file".equals(protocol)) { // 文件系统场景
                     final String filePath = java.net.URLDecoder.decode(url.getFile(), "UTF-8"); // 解码后得到实际文件路径
                     final java.io.File dir = new java.io.File(filePath); // 将路径包装成 File
-                    scanDirectory(basePackage, dir, components, cl); // 委托目录扫描方法
+                    scanDirectory(trimmedBasePackage, dir, components, cl); // 委托目录扫描方法
                 } else if ("jar".equals(protocol)) { // JAR 包场景
                     scanJarEntries(path, components, cl, url); // 委托 JAR 扫描方法
                 } else { // 其他协议
@@ -195,20 +207,20 @@ public class Container { // 定义容器核心类
                                 java.net.URL url) { // 遍历 JAR 中的条目
         try { // 捕获 JAR 访问异常
             final java.net.JarURLConnection conn = (java.net.JarURLConnection) url.openConnection(); // 打开连接
-            final java.util.jar.JarFile jar = conn.getJarFile(); // 取得 JarFile 句柄
+            try (java.util.jar.JarFile jar = conn.getJarFile()) { // 使用 try-with-resources 确保资源关闭
+                final java.util.Enumeration<java.util.jar.JarEntry> entries = jar.entries(); // 遍历 JAR 内所有条目
+                while (entries.hasMoreElements()) { // 逐条处理
+                    final java.util.jar.JarEntry entry = entries.nextElement(); // 取出一个条目
+                    final String name = entry.getName(); // 形如 "com/example/Foo.class"
 
-            final java.util.Enumeration<java.util.jar.JarEntry> entries = jar.entries(); // 遍历 JAR 内所有条目
-            while (entries.hasMoreElements()) { // 逐条处理
-                final java.util.jar.JarEntry entry = entries.nextElement(); // 取出一个条目
-                final String name = entry.getName(); // 形如 "com/example/Foo.class"
-
-                if (name.startsWith(resourcePath) && name.endsWith(".class") && !entry.isDirectory()) { // 过滤条件
-                    final String fqcn = name
-                            .substring(0, name.length() - 6) // 去掉 ".class"
-                            .replace('/', '.'); // 将路径分隔符替换为包名分隔符
-                    maybeAddComponentClass(fqcn, out, cl); // 统一处理
-                } // 条目过滤结束
-            } // JAR 条目遍历结束
+                    if (name.startsWith(resourcePath) && name.endsWith(".class") && !entry.isDirectory()) { // 过滤条件
+                        final String fqcn = name
+                                .substring(0, name.length() - 6) // 去掉 ".class"
+                                .replace('/', '.'); // 将路径分隔符替换为包名分隔符
+                        maybeAddComponentClass(fqcn, out, cl); // 统一处理
+                    } // 条目过滤结束
+                } // JAR 条目遍历结束
+            }
         } catch (Exception e) { // 捕获连接与遍历过程中的异常
             System.out.println("[WARN] scanJarEntries failed: " + e.getMessage()); // 输出异常信息
         } // try-catch 结束
